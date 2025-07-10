@@ -1,4 +1,4 @@
-module github.com/kaleido-io/vault-plugin-secrets-ethsign
+module github.com/ivorypay/vault-plugin-secrets-secp256k1
 
 go 1.16
 

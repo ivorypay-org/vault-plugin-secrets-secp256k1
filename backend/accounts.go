@@ -29,7 +29,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
-	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -42,6 +41,12 @@ type Account struct {
 	Address    string `json:"address"`
 	PrivateKey string `json:"private_key"`
 	PublicKey  string `json:"public_key"`
+}
+
+// KeyPair is a structure to hold the hex encoded private and public keys
+type KeyPair struct {
+	PrivateKey string `json:"private_key"`
+	PublicKey  string  `json:"public_key"`
 }
 
 func paths(b *backend) []*framework.Path {
@@ -63,23 +68,61 @@ func (b *backend) listAccounts(ctx context.Context, req *logical.Request, data *
 	return logical.ListResponse(vals), nil
 }
 
+func (b *backend) createMasterKey(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	product := data.Get("product").(string)
+	// Generate a new master key
+	privateKey, err := crypto.GenerateKey()
+	if err != nil {
+		b.Logger().Error("Failed to generate a new master key", "error", err)
+		return nil, fmt.Errorf("Failed to generate a new master key")
+	}
+
+	privateKeyBytes := crypto.FromECDSA(privateKey)
+	privateKeyString := hexutil.Encode(privateKeyBytes)[2:]
+
+	publicKey := privateKey.Public()
+	publicKeyECDSA, _ := publicKey.(*ecdsa.PublicKey)
+	publicKeyBytes := crypto.FromECDSAPub(publicKeyECDSA)
+	publicKeyString := hexutil.Encode(publicKeyBytes)[2:]
+
+	accountPath := fmt.Sprintf("accounts/%s", product)
+
+	masterKey := &KeyPair{
+		PrivateKey: privateKeyString,
+		PublicKey:  publicKeyString,
+	}
+	entry, _ := logical.StorageEntryJSON(accountPath, masterKey)
+	err = req.Storage.Put(ctx, entry)
+	if err != nil {
+		b.Logger().Error("Failed to save the new account to storage", "error", err)
+		return nil, err
+	}
+
+	return &logical.Response{
+		Data: map[string]interface{}{
+			"pubKey": publicKeyString,
+		},
+	}, nil
+}
+
 func (b *backend) createAccount(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	keyInput := data.Get("privateKey").(string)
+	product := data.Get("product").(string)
 	var privateKey *ecdsa.PrivateKey
 	var privateKeyString string
 	var err error
 
 	if keyInput != "" {
-    re := regexp.MustCompile("[0-9a-fA-F]{64}$")
-    key := re.FindString(keyInput)
-    if key == "" {
-      b.Logger().Error("Input private key did not parse successfully", "privateKey", keyInput)
-      return nil, fmt.Errorf("privateKey must be a 32-byte hexidecimal string")
-    }
+		re := regexp.MustCompile("[0-9a-fA-F]{64}$")
+		key := re.FindString(keyInput)
+		if key == "" {
+			b.Logger().Error("Input private key did not parse successfully", "privateKey", keyInput)
+			return nil, fmt.Errorf("privateKey must be a 32-byte hexidecimal string")
+		}
 		privateKey, err = crypto.HexToECDSA(key)
 		if err != nil {
 			b.Logger().Error("Error reconstructing private key from input hex", "error", err)
-			return nil, fmt.Errorf("Error reconstructing private key from input hex")
+			return nil, fmt.Errorf("error reconstructing private key from input hex")
 		}
 		privateKeyString = key
 	} else {
@@ -95,17 +138,7 @@ func (b *backend) createAccount(ctx context.Context, req *logical.Request, data 
 	publicKeyBytes := crypto.FromECDSAPub(publicKeyECDSA)
 	publicKeyString := hexutil.Encode(publicKeyBytes)[4:]
 
-	hash := sha3.NewLegacyKeccak256()
-	hash.Write(publicKeyBytes[1:])
-	address := hexutil.Encode(hash.Sum(nil)[12:])
-
 	accountPath := fmt.Sprintf("accounts/%s", address)
-
-	accountJSON := &Account{
-		Address:    address,
-		PrivateKey: privateKeyString,
-		PublicKey:  publicKeyString,
-	}
 
 	entry, _ := logical.StorageEntryJSON(accountPath, accountJSON)
 	err = req.Storage.Put(ctx, entry)
