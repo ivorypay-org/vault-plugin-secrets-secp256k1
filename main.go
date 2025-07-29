@@ -15,12 +15,12 @@
 package main
 
 import (
-	"log"
 	"os"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/api"
 	"github.com/hashicorp/vault/sdk/plugin"
-	"github.com/kaleido-io/vault-plugin-secrets-ethsign/backend"
+	"github.com/ivorypay/vault-plugin-secrets-secp256k1/backend"
 )
 
 func main() {
@@ -36,7 +36,9 @@ func main() {
 		TLSProviderFunc:    tlsProviderFunc,
 	})
 	if err != nil {
-		log.Println(err)
-		os.Exit(1)
-	}
+        logger := hclog.New(&hclog.LoggerOptions{})
+
+        logger.Error("plugin shutting down", "error", err)
+        os.Exit(1)
+    }
 }

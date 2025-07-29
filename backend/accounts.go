@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"regexp"
@@ -46,55 +47,77 @@ type Account struct {
 // KeyPair is a structure to hold the hex encoded private and public keys
 type KeyPair struct {
 	PrivateKey string `json:"private_key"`
-	PublicKey  string  `json:"public_key"`
+	PublicKey  string `json:"public_key"`
 }
 
 func paths(b *backend) []*framework.Path {
 	return []*framework.Path{
-		pathCreateAndList(b),
-		pathReadAndDelete(b),
-		pathSign(b),
-		pathExport(b),
+		pathCreateKey(b),
+		pathListKeys(b),
 	}
 }
 
-func (b *backend) listAccounts(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	vals, err := req.Storage.List(ctx, "accounts/")
+func (b *backend) listKeys(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	queryString := data.Get("id").(string)
+	if queryString != "" {
+		// If an id is provided, we will return the specific key if it exists
+		keyPair, err := b.getKey(queryString, req.Storage, ctx)
+		if err != nil {
+			b.Logger().Error("Failed to retrieve the key by id", "id", queryString, "error", err)
+			return nil, err
+		}
+		if keyPair == nil {
+			return logical.ErrorResponse("Key not found"), nil
+		}
+		return &logical.Response{
+			Data: map[string]interface{}{
+				"id":         queryString,
+				"privateKey": keyPair.PrivateKey,
+				"publicKey":  keyPair.PublicKey,
+			},
+		}, nil
+	}
+	// If no id is provided, we will list all keys
+	keys, err := req.Storage.List(ctx, "secp256k1/keys/")
 	if err != nil {
-		b.Logger().Error("Failed to retrieve the list of accounts", "error", err)
+		b.Logger().Error("Failed to retrieve the list of keys", "error", err)
 		return nil, err
 	}
 
-	return logical.ListResponse(vals), nil
+	return logical.ListResponse(keys), nil
 }
 
-func (b *backend) createMasterKey(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	product := data.Get("product").(string)
-	// Generate a new master key
-	privateKey, err := crypto.GenerateKey()
-	if err != nil {
-		b.Logger().Error("Failed to generate a new master key", "error", err)
-		return nil, fmt.Errorf("Failed to generate a new master key")
+func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	id := data.Get("id").(string) // id for this keypair, a good id is a hash(<unique values>)
+	var privateKey *ecdsa.PrivateKey
+
+	if id == "" {
+		return nil, fmt.Errorf("a unique identifier for the keypair is required as a parameter called id")
 	}
 
+	privateKey, _ = crypto.GenerateKey()
 	privateKeyBytes := crypto.FromECDSA(privateKey)
 	privateKeyString := hexutil.Encode(privateKeyBytes)[2:]
+
+	defer ZeroKey(privateKey)
 
 	publicKey := privateKey.Public()
 	publicKeyECDSA, _ := publicKey.(*ecdsa.PublicKey)
 	publicKeyBytes := crypto.FromECDSAPub(publicKeyECDSA)
 	publicKeyString := hexutil.Encode(publicKeyBytes)[2:]
 
-	accountPath := fmt.Sprintf("accounts/%s", product)
-
-	masterKey := &KeyPair{
+	keypair := &KeyPair{
 		PrivateKey: privateKeyString,
 		PublicKey:  publicKeyString,
 	}
-	entry, _ := logical.StorageEntryJSON(accountPath, masterKey)
-	err = req.Storage.Put(ctx, entry)
+
+	accountPath := fmt.Sprintf("secp256k1/keys/%s", id)
+	accountBz, _ := json.Marshal(keypair)
+
+	entry, _ := logical.StorageEntryJSON(accountPath, accountBz)
+	err := req.Storage.Put(ctx, entry)
 	if err != nil {
-		b.Logger().Error("Failed to save the new account to storage", "error", err)
+		b.Logger().Error("failed to save the new keypair to storage", "error", err)
 		return nil, err
 	}
 
@@ -105,77 +128,10 @@ func (b *backend) createMasterKey(ctx context.Context, req *logical.Request, dat
 	}, nil
 }
 
-func (b *backend) createAccount(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	keyInput := data.Get("privateKey").(string)
-	product := data.Get("product").(string)
-	var privateKey *ecdsa.PrivateKey
-	var privateKeyString string
-	var err error
-
-	if keyInput != "" {
-		re := regexp.MustCompile("[0-9a-fA-F]{64}$")
-		key := re.FindString(keyInput)
-		if key == "" {
-			b.Logger().Error("Input private key did not parse successfully", "privateKey", keyInput)
-			return nil, fmt.Errorf("privateKey must be a 32-byte hexidecimal string")
-		}
-		privateKey, err = crypto.HexToECDSA(key)
-		if err != nil {
-			b.Logger().Error("Error reconstructing private key from input hex", "error", err)
-			return nil, fmt.Errorf("error reconstructing private key from input hex")
-		}
-		privateKeyString = key
-	} else {
-		privateKey, _ = crypto.GenerateKey()
-		privateKeyBytes := crypto.FromECDSA(privateKey)
-		privateKeyString = hexutil.Encode(privateKeyBytes)[2:]
-	}
-
-	defer ZeroKey(privateKey)
-
-	publicKey := privateKey.Public()
-	publicKeyECDSA, _ := publicKey.(*ecdsa.PublicKey)
-	publicKeyBytes := crypto.FromECDSAPub(publicKeyECDSA)
-	publicKeyString := hexutil.Encode(publicKeyBytes)[4:]
-
-	accountPath := fmt.Sprintf("accounts/%s", address)
-
-	entry, _ := logical.StorageEntryJSON(accountPath, accountJSON)
-	err = req.Storage.Put(ctx, entry)
-	if err != nil {
-		b.Logger().Error("Failed to save the new account to storage", "error", err)
-		return nil, err
-	}
-
-	return &logical.Response{
-		Data: map[string]interface{}{
-			"address": accountJSON.Address,
-		},
-	}, nil
-}
-
-func (b *backend) readAccount(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	address := data.Get("name").(string)
-	b.Logger().Info("Retrieving account for address", "address", address)
-	account, err := b.retrieveAccount(ctx, req, address)
-	if err != nil {
-		return nil, err
-	}
-	if account == nil {
-		return nil, fmt.Errorf("Account does not exist")
-	}
-
-	return &logical.Response{
-		Data: map[string]interface{}{
-			"address": account.Address,
-		},
-	}, nil
-}
-
 func (b *backend) exportAccount(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	address := data.Get("name").(string)
 	b.Logger().Info("Retrieving account for address", "address", address)
-	account, err := b.retrieveAccount(ctx, req, address)
+	account, err := b.getKey(address, req.Storage, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +141,7 @@ func (b *backend) exportAccount(ctx context.Context, req *logical.Request, data 
 
 	return &logical.Response{
 		Data: map[string]interface{}{
-			"address":    account.Address,
+			"address":    account.PublicKey,
 			"privateKey": account.PrivateKey,
 		},
 	}, nil
@@ -193,7 +149,7 @@ func (b *backend) exportAccount(ctx context.Context, req *logical.Request, data 
 
 func (b *backend) deleteAccount(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	address := data.Get("name").(string)
-	account, err := b.retrieveAccount(ctx, req, address)
+	account, err := b.getKey(address, req.Storage, ctx)
 	if err != nil {
 		b.Logger().Error("Failed to retrieve the account by address", "address", address, "error", err)
 		return nil, err
@@ -201,38 +157,33 @@ func (b *backend) deleteAccount(ctx context.Context, req *logical.Request, data 
 	if account == nil {
 		return nil, nil
 	}
-	if err := req.Storage.Delete(ctx, fmt.Sprintf("accounts/%s", account.Address)); err != nil {
+	if err := req.Storage.Delete(ctx, fmt.Sprintf("accounts/%s", account.PublicKey)); err != nil {
 		b.Logger().Error("Failed to delete the account from storage", "address", address, "error", err)
 		return nil, err
 	}
 	return nil, nil
 }
 
-func (b *backend) retrieveAccount(ctx context.Context, req *logical.Request, address string) (*Account, error) {
-	var path string
-	matched, err := regexp.MatchString("^(0x)?[0-9a-fA-F]{40}$", address)
-	if !matched || err != nil {
-		b.Logger().Error("Failed to retrieve the account, malformatted account address", "address", address, "error", err)
-		return nil, fmt.Errorf("Failed to retrieve the account, malformatted account address")
-	} else {
-		// make sure the address has the "0x prefix"
-		if address[:2] != "0x" {
-			address = "0x" + address
-		}
-		path = fmt.Sprintf("accounts/%s", address)
-		entry, err := req.Storage.Get(ctx, path)
-		if err != nil {
-			b.Logger().Error("Failed to retrieve the account by address", "path", path, "error", err)
-			return nil, err
-		}
-		if entry == nil {
-			// could not find the corresponding key for the address
-			return nil, nil
-		}
-		var account Account
-		_ = entry.DecodeJSON(&account)
-		return &account, nil
+func (b *backend) getKey(id string, storage logical.Storage, ctx context.Context) (*KeyPair, error) {
+	if id == "" {
+		return nil, fmt.Errorf("a unique identifier for the keypair is required")
 	}
+	path := fmt.Sprintf("secp256k1/keys/%s", id)
+	entry, err := storage.Get(ctx, path)
+	if err != nil {
+		b.Logger().Error("Failed to retrieve the key by id", "path", path, "error", err)
+		return nil, err
+	}
+	if entry == nil {
+		// could not find the corresponding key for the id
+		return nil, nil
+	}
+	var keyPair KeyPair
+	if err := entry.DecodeJSON(&keyPair); err != nil {
+		b.Logger().Error("Failed to decode the key entry", "path", path, "error", err)
+		return nil, fmt.Errorf("failed to decode the key entry")
+	}
+	return &keyPair, nil
 }
 
 func (b *backend) signTx(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
@@ -254,32 +205,32 @@ func (b *backend) signTx(ctx context.Context, req *logical.Request, data *framew
 		return nil, err
 	}
 
-	account, err := b.retrieveAccount(ctx, req, from)
+	account, err := b.getKey(from, req.Storage, ctx)
 	if err != nil {
-		b.Logger().Error("Failed to retrieve the signing account", "address", from, "error", err)
-		return nil, fmt.Errorf("Error retrieving signing account %s", from)
+		b.Logger().Error("failed to retrieve the signing account", "address", from, "error", err)
+		return nil, fmt.Errorf("error retrieving signing account %s", from)
 	}
 	if account == nil {
-		return nil, fmt.Errorf("Signing account %s does not exist", from)
+		return nil, fmt.Errorf("signing account %s does not exist", from)
 	}
 	amount := ValidNumber(data.Get("value").(string))
 	if amount == nil {
-		b.Logger().Error("Invalid amount for the 'value' field", "value", data.Get("value").(string))
-		return nil, fmt.Errorf("Invalid amount for the 'value' field")
+		b.Logger().Error("invalid amount for the 'value' field", "value", data.Get("value").(string))
+		return nil, fmt.Errorf("invalid amount for the 'value' field")
 	}
 
 	rawAddressTo := data.Get("to").(string)
 
 	chainId := ValidNumber(data.Get("chainId").(string))
 	if chainId == nil {
-		b.Logger().Error("Invalid chainId", "chainId", data.Get("chainId").(string))
-		return nil, fmt.Errorf("Invalid 'chainId' value")
+		b.Logger().Error("invalid chainId", "chainId", data.Get("chainId").(string))
+		return nil, fmt.Errorf("invalid 'chainId' value")
 	}
 
 	gasLimitIn := ValidNumber(data.Get("gas").(string))
 	if gasLimitIn == nil {
-		b.Logger().Error("Invalid gas limit", "gas", data.Get("gas").(string))
-		return nil, fmt.Errorf("Invalid gas limit")
+		b.Logger().Error("invalid gas limit", "gas", data.Get("gas").(string))
+		return nil, fmt.Errorf("invalid gas limit")
 	}
 	gasLimit := gasLimitIn.Uint64()
 
@@ -287,14 +238,13 @@ func (b *backend) signTx(ctx context.Context, req *logical.Request, data *framew
 
 	privateKey, err := crypto.HexToECDSA(account.PrivateKey)
 	if err != nil {
-		b.Logger().Error("Error reconstructing private key from retrieved hex", "error", err)
-		return nil, fmt.Errorf("Error reconstructing private key from retrieved hex")
+		b.Logger().Error("error reconstructing private key from retrieved hex", "error", err)
+		return nil, fmt.Errorf("error reconstructing private key from retrieved hex")
 	}
 	defer ZeroKey(privateKey)
 
 	nonceIn := ValidNumber(data.Get("nonce").(string))
-	var nonce uint64
-	nonce = nonceIn.Uint64()
+	nonce := nonceIn.Uint64()
 
 	var tx *types.Transaction
 	if rawAddressTo == "" {

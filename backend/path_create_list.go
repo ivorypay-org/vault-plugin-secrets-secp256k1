@@ -5,25 +5,38 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
-func pathCreateAndList(b *backend) *framework.Path {
+func pathCreateKey(b *backend) *framework.Path {
 	return &framework.Path{
-		Pattern: "accounts/?",
+		Pattern: "secp256k1/keys/?",
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.ListOperation:   b.listAccounts,
-			logical.UpdateOperation: b.createAccount,
+			logical.CreateOperation: b.createSecp256k1,
 		},
-		HelpSynopsis: "List all the Ethereum accounts maintained by the plugin backend and create new accounts.",
-		HelpDescription: `
-
-    LIST - list all accounts
-    POST - create a new account
-
-    `,
+		HelpSynopsis: "create a secp256k1 key",
+		HelpDescription: "Post to this endpoint to create a secp256k1 key. The path end is the hash where the key is stored",
 		Fields: map[string]*framework.FieldSchema{
-			"privateKey": &framework.FieldSchema{
+			"id": &framework.FieldSchema{
 				Type:        framework.TypeString,
-				Description: "Hexidecimal string for the private key (32-byte or 64-char long). If present, the request will import the given key instead of generating a new key.",
-				Default:     "",
+				Description: "The ID of the key to create. This field is required.",
+				Required: true,
+			},
+		},
+	}
+}
+
+func pathListKeys(b *backend) *framework.Path {
+	return &framework.Path{
+		Pattern: "secp256k1/keys/?",
+		Callbacks: map[logical.Operation]framework.OperationFunc{
+			logical.ListOperation:   b.listKeys,
+		},
+		HelpSynopsis: "List all or a specific secp256k1 key created or managed by the plugin backend.",
+		HelpDescription: "Use this endpoint to retrieve a list of all secp256k1 keys created or managed by the plugin backend. If no keys are found, an empty list will be returned. If an id is provided, it will return the specific key if it exists.",
+		Fields: map[string]*framework.FieldSchema{
+			"id": &framework.FieldSchema{
+				Type:        framework.TypeString,
+				Description: "The ID of the key to retrieve. If not provided, all keys will be listed.",
+				Required:    false,
+				Query:      true,
 			},
 		},
 	}

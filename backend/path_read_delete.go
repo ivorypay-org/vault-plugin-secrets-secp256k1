@@ -21,7 +21,7 @@ func pathReadAndDelete(b *backend) *framework.Path {
 		},
 		ExistenceCheck: b.pathExistenceCheck,
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.ReadOperation:   b.readAccount,
+			// logical.ReadOperation:   b.readAccount,
 			logical.DeleteOperation: b.deleteAccount,
 		},
 	}
