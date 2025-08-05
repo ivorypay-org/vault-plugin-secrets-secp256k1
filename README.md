@@ -7,7 +7,7 @@ A HashiCorp Vault plugin that supports secp256k1 based signing, with an API inte
 
 ![Overview](/resources/overview.png)
 
-The plugin only exposes the following endpoints to enable the client to generate signing keys for the secp256k1 curve suitable for signing Ethereum transactions, list existing signing keys by their names and addresses, and a `/sign` endpoint for each account. The generated private keys are saved in the vault as a secret. It never gives out the private keys.
+The plugin only exposes the following endpoints to enable the client to generate signing keys for the secp256k1 curve. List existing signing keys by their id, and a `/sign` endpoint for each account. The generated private keys are saved in the vault as a secret. It never gives out the private keys.
 
 ## Build
 These dependencies are needed:
@@ -19,7 +19,7 @@ To build the binary:
 make all
 ```
 
-The output is `ethsign`
+The output is `ivory-secp256k1`, which is the plugin binary that can be used with HashiCorp Vault.
 
 ## Installing the Plugin on HashiCorp Vault server
 The plugin must be registered and enabled on the vault server as a secret engine.
@@ -29,7 +29,7 @@ The easiest way to try out the plugin is using a dev mode server to load it.
 
 Download the binary: [https://www.vaultproject.io/downloads/](https://www.vaultproject.io/downloads/)
 
-First copy the build output binary `ethsign` to the plugins folder, say `~/.vault.d/vault-plugins/`.
+First copy the build output binary `ivory-secp256k1` to the plugins folder, say `~/.vault.d/vault-plugins/`.
 ```
 ./vault server -dev -dev-plugin-dir=/Users/alice/.vault.d/vault_plugins/
 ```
@@ -42,12 +42,12 @@ Key         Value
 ---         -----
 auth        [alicloud app-id approle aws azure centrify cert cf gcp github jwt kubernetes ldap oci oidc okta pcf radius userpass]
 database    [cassandra-database-plugin elasticsearch-database-plugin hana-database-plugin influxdb-database-plugin mongodb-database-plugin mssql-database-plugin mysql-aurora-database-plugin mysql-database-plugin mysql-legacy-database-plugin mysql-rds-database-plugin postgresql-database-plugin]
-secret      [ad alicloud aws azure cassandra consul ethsign gcp gcpkms kv mongodb mssql mysql nomad pki postgresql rabbitmq ssh totp transit]
+secret      [ad alicloud aws azure cassandra consul ivory-secp256k1 gcp gcpkms kv mongodb mssql mysql nomad pki postgresql rabbitmq ssh totp transit]
 ```
 
-Note the `ethsign` entry in the secret section. Now it's ready to be enabled:
+Note the `ivory-secp256k1` entry in the secret section. Now it's ready to be enabled:
 ```
- ./vault secrets enable -path=ethereum -description="Ethereum Wallet" -plugin-name=ethsign plugin
+ ./vault secrets enable -path=secp256k1 -description="SECP 256k1" -plugin-name=ivory-secp256k1 plugin
 ```
 
 To verify the new secret engine based on the plugin has been enabled:
@@ -69,29 +69,29 @@ Before enabling the plugin on the server, it must first be registered.
 
 First copy the binary to the plugin folder for the server (consult the configuration file for the plugin folder location). Then calculate a SHA256 hash for the binary.
 ```
-shasum -a 256 ./ethsign
+shasum -a 256 ./ivory-secp256k1
 ```
 
 Use the hash to register the plugin with vault:
 ```
- ./vault write sys/plugins/catalog/eth-hsm sha_256=$SHA command="ethsign"
+ ./vault write sys/plugins/catalog/eth-hsm sha_256=$SHA command="ivory-secp256k1"
 ```
-> If the target vault server is enabled for TLS, and is using a self-signed certificate or other non-verifiable TLS certificate, then the command value needs to contain the switch to turn off TLS verify: `command="ethsign -tls-skip-verify"`
+> If the target vault server is enabled for TLS, and is using a self-signed certificate or other non-verifiable TLS certificate, then the command value needs to contain the switch to turn off TLS verify: `command="ivory-secp256k1 -tls-skip-verify"`
 
 Once registered, just like in dev mode, it's ready to be enabled as a secret engine:
 ```
- ./vault secrets enable -path=ethereum -description="Eth Signing Wallet" -plugin-name=ethsign plugin
+ ./vault secrets enable -path=ethereum -description="Eth Signing Wallet" -plugin-name=ivory-secp256k1 plugin
 ```
 
-## Interacting with the ethsign Plugin
-The plugin does not interact with the target blockchain. It has very simple responsibilities: sign transactions for submission to an Ethereum blockchain.
-
-### Creating A New Signing Account
-Create a new Ethereum account in the vault by POSTing to the `/accounts` endpoint.
+## Interacting with the ivory-secp256k1 Plugin
+The plugin does not interact with the target blockchain. It has very simple responsibilities: sign transactions f blockchain.
+It does not validate the transactions, nor does it check the balances of the accounts. It is up to the client to ensure that the transactions are valid and that the accounts have sufficient balance to pay for the gas.
+### Creating A New Signing Key
+Create a new key in the vault by POSTing to the `/keys` endpoint.
 
 Using the REST API:
 ```
-$ curl -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' http://localhost:8200/v1/ethereum/accounts |jq
+$ curl -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{}' http://localhost:8200/v1/secp256k1/keys |jq
 
 {
   "request_id": "a183425c-0998-0888-c768-8dda4ff60bef",
@@ -109,49 +109,19 @@ $ curl -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d 
 
 Using the command line:
 ```
-$ vault write -force ethereum/accounts
+$ vault write -force secp256k1/keys/
 
-Key        Value
----        -----
-address    0x73b508a63af509a28fb034bf4742bb1a91fcbc4e
+Key       Value
+---       -----
+pubKey    0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10
 ```
 
-### Importing An Existing Private Key
-You can also create a new signing account by importing from an existing private key. The private key is passed in as a hexidecimal string, without the '0x' prfix.
+### List Existing Keys
+The list command only returns the addresses of the signing accounts. To return the private keys, use the `/export/keys/:id` endpoint.
 
 Using the REST API:
 ```
-$ curl -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{"privateKey":"ec85999367d32fbbe02dd600a2a44550b95274cc67d14375a9f0bce233f13ad2"}' http://localhost:8200/v1/ethereum/accounts |jq
-
-{
-  "request_id": "a183425c-0998-0888-c768-8dda4ff60bef",
-  "lease_id": "",
-  "renewable": false,
-  "lease_duration": 0,
-  "data": {
-    "address": "0xd5bcc62d9b1087a5cfec116c24d6187dd40fdf8a"
-  },
-  "wrap_info": null,
-  "warnings": null,
-  "auth": null
-}
-```
-
-Using the command line:
-```
-$ vault write ethereum/accounts privateKey=ec85999367d32fbbe02dd600a2a44550b95274cc67d14375a9f0bce233f13ad2
-
-Key        Value
----        -----
-address    0xd5bcc62d9b1087a5cfec116c24d6187dd40fdf8a
-```
-
-### List Existing Accounts
-The list command only returns the addresses of the signing accounts. To return the private keys, use the `/export/accounts/:address` endpoint.
-
-Using the REST API:
-```
-$  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/accounts?list=true |jq
+$  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/secp256k1/keys?list=true |jq
 
 {
   "request_id": "56c31ef5-9757-1ff4-354e-3b18ecd8ea77",
@@ -160,8 +130,7 @@ $  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/acco
   "lease_duration": 0,
   "data": {
     "keys": [
-      "0xb579cbf259a8d36b22f2799eeeae5f3553b11eb7",
-      "0x54edadf1696986c1884534bc6b633ff9a7fdb747"
+      "0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10",
     ]
   },
   "wrap_info": null,
@@ -172,20 +141,19 @@ $  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/acco
 
 Using the command line:
 ```
-g$ vault list eth/accounts
+$ vault list secp256k1/keys
 
 Keys
 ----
-0x73b508a63af509a28fb034bf4742bb1a91fcbc4e
-0xd5bcc62d9b1087a5cfec116c24d6187dd40fdf8a
+
 ```
 
-### Reading Individual Accounts
-Inspect the key using the address. Only the address of the signing account is returned. To return the private key, use the `/export/accounts/:address` endpoint.
+### Reading Individual Keys
+Inspect the key using the address. Only the address of the signing key is returned. To return the private key, use the `/export/keys/:address` endpoint.
 
 Using the REST API:
 ```
-$  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/accounts/0x54edadf1696986c1884534bc6b633ff9a7fdb747 |jq
+$  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/secp256k1/keys/0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10 |jq
 
 {
   "request_id": "a183425c-0998-0888-c768-8dda4ff60bef",
@@ -193,7 +161,7 @@ $  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/acco
   "renewable": false,
   "lease_duration": 0,
   "data": {
-    "address": "0xb579cbf259a8d36b22f2799eeeae5f3553b11eb7",
+    "pubKey": "0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10",
   },
   "wrap_info": null,
   "warnings": null,
@@ -203,19 +171,22 @@ $  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/acco
 
 Using the command line:
 ```
-$ vault read eth/accounts/0xd5bcc62d9b1087a5cfec116c24d6187dd40fdf8a
+$ vault read secp256k1/keys/0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10
 
 Key        Value
 ---        -----
-address    0xd5bcc62d9b1087a5cfec116c24d6187dd40fdf8a
+pubKey     0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10
 ```
 
-### Export An Account
+### Export A Key
+To export a key, you need to use the `/export/keys/:address` endpoint.
+This will return the private key in addition to the address. This is useful for importing the key into another wallet or signing service.
+> **Warning**: Exporting the private key is a sensitive operation. Make sure you understand the implications of exporting a private key. Once exported, the key can be used to sign transactions without the vault plugin. It is recommended to only export keys that are not used for signing transactions in production environments, or to export keys that are used for testing purposes only.
 You can also export the account by returning the private key.
 
 Using the REST API:
 ```
-$  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/export/accounts/0x54edadf1696986c1884534bc6b633ff9a7fdb747 |jq
+$  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/secp256k1/export/keys/0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10 |jq
 
 {
   "request_id": "a183425c-0998-0888-c768-8dda4ff60bef",
@@ -234,11 +205,11 @@ $  curl -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/expo
 
 Using the command line:
 ```
-$ vault read eth/export/accounts/0xd5bcc62d9b1087a5cfec116c24d6187dd40fdf8a
+$ vault read secp256k1/export/keys/0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10
 
 Key           Value
 ---           -----
-address       0xd5bcc62d9b1087a5cfec116c24d6187dd40fdf8a
+pubKey       0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10
 privateKey    ec85999367d32fbbe02dd600a2a44550b95274cc67d14375a9f0bce233f13ad2
 ```
 
@@ -247,7 +218,7 @@ Use one of the accounts to sign a transaction.
 
 Using the REST API:
 ```
-$  curl -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/ethereum/accounts/0xc9389f98b1c5f5f9b6b61b5e3769471d550ad596/sign -d '{"data":"0x60fe47b10000000000000000000000000000000000000000000000000000000000000014","gas":30791,"gasPrice":0,"nonce":"0x0","to":"0xca0fe7354981aeb9d051e2f709055eb50b774087"}' |jq
+$  curl -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" http://localhost:8200/v1/secp256k1/keys/0457a4d0a822b053b2ed158b877f1613380157e5ea213e82fd8abe9a2b0515a356896c6aae1de2f79b321d7155d4c1bf5bcfcb9f49e0c17fc149db600310596a10/sign -d '{"data":"0x60fe47b10000000000000000000000000000000000000000000000000000000000000014","gas":30791,"gasPrice":0,"nonce":"0x0","to":"0xca0fe7354981aeb9d051e2f709055eb50b774087"}' |jq
 
 {
   "request_id": "4b68c813-eda9-e3c7-4651-e9dbc526bf47",
