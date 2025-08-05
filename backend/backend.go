@@ -44,7 +44,7 @@ func Backend() (*backend, error) {
 		),
 		PathsSpecial: &logical.Paths{
 			SealWrapStorage: []string{
-				"accounts/",
+				"secp256k1/",
 			},
 		},
 		Secrets:     []*framework.Secret{},

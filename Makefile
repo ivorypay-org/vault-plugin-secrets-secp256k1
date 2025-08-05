@@ -13,9 +13,9 @@ SRC_GOFILES := $(shell find . -name '*.go' -print)
 all: build test
 test: deps
 		$(VGO) test  ./... -cover -coverprofile=coverage.txt -covermode=atomic
-ethsign: ${SRC_GOFILES}
+secp256k1: ${SRC_GOFILES}
 		$(VGO) build -o ${BINARY_NAME} -ldflags "-X main.buildDate=`date -u +\"%Y-%m-%dT%H:%M:%SZ\"` -X main.buildVersion=$(BUILD_VERSION)" -tags=prod -v
-build: ethsign
+build: secp256k1
 clean: build
 		$(VGO) clean
 		rm -f ${BINARY_NAME}

@@ -7,9 +7,9 @@ import (
 
 func pathCreateKey(b *backend) *framework.Path {
 	return &framework.Path{
-		Pattern: "secp256k1/keys/?",
+		Pattern: "keys/?$",
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.CreateOperation: b.createSecp256k1,
+			logical.UpdateOperation: b.createSecp256k1,
 		},
 		HelpSynopsis: "create a secp256k1 key",
 		HelpDescription: "Post to this endpoint to create a secp256k1 key. The path end is the hash where the key is stored",
