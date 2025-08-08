@@ -15,18 +15,16 @@
 package backend
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"regexp"
+	"strings"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	log "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/sdk/framework"
@@ -55,6 +53,8 @@ func paths(b *backend) []*framework.Path {
 	return []*framework.Path{
 		pathCreateKey(b),
 		pathListKeys(b),
+		pathGetKey(b),
+		pathSignDigest(b),
 	}
 }
 
@@ -96,6 +96,21 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 		return nil, fmt.Errorf("a unique identifier for the keypair is required as a parameter called id")
 	}
 
+	// check if the key already exists
+	key, err := getKey(id, req.Storage, ctx, b.Logger())
+	if err != nil {
+		b.Logger().Error("Failed to retrieve the key by id", "id", id, "error", err)
+		return nil, err
+	}
+	if key != nil {
+		b.Logger().Info("Key already exists", "id", id)
+		return &logical.Response{
+			Data: map[string]interface{}{
+				"pubKey": key.PublicKey,
+			},
+		}, nil
+	}
+
 	privateKey, _ = crypto.GenerateKey()
 	privateKeyBytes := crypto.FromECDSA(privateKey)
 	privateKeyString := hexutil.Encode(privateKeyBytes)[2:]
@@ -113,10 +128,9 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 	}
 
 	accountPath := fmt.Sprintf("secp256k1/keys/%s", id)
-	accountBz, _ := json.Marshal(keypair)
 
-	entry, _ := logical.StorageEntryJSON(accountPath, accountBz)
-	err := req.Storage.Put(ctx, entry)
+	entry, _ := logical.StorageEntryJSON(accountPath, keypair)
+	err = req.Storage.Put(ctx, entry)
 	if err != nil {
 		b.Logger().Error("failed to save the new keypair to storage", "error", err)
 		return nil, err
@@ -173,7 +187,9 @@ func (b *backend) ListKeys(ctx context.Context, req *logical.Request, data *fram
 		if err != nil {
 			return nil, fmt.Errorf("%v", err)
 		}
-		return key, nil
+		return &logical.Response{Data: map[string]interface{}{
+			"pubKey": key.PublicKey,
+		}}, nil
 	}
 
 	keys, err := req.Storage.List(ctx, "keys/")
@@ -185,7 +201,7 @@ func (b *backend) ListKeys(ctx context.Context, req *logical.Request, data *fram
 	return logical.ListResponse(keys), nil
 }
 
-func getKey(id string, storage logical.Storage, ctx context.Context, logger log.Logger) (*logical.Response, error) {
+func getKey(id string, storage logical.Storage, ctx context.Context, logger log.Logger) (*KeyPair, error) {
 	if id == "" {
 		return nil, fmt.Errorf("a unique identifier for the keypair is required")
 	}
@@ -195,7 +211,7 @@ func getKey(id string, storage logical.Storage, ctx context.Context, logger log.
 		logger.Error("Failed to retrieve the key by id", "path", path, "error", err)
 		return nil, err
 	}
-	if entry == nil {
+	if entry.Value == nil {
 		// could not find the corresponding key for the id
 		return nil, nil
 	}
@@ -204,102 +220,70 @@ func getKey(id string, storage logical.Storage, ctx context.Context, logger log.
 		logger.Error("Failed to decode the key entry", "path", path, "error", err)
 		return nil, fmt.Errorf("failed to decode the key entry")
 	}
-	return &logical.Response{
-		Data: map[string]interface{}{
-			"pubKey":     keyPair.PublicKey,
-			"privateKey": keyPair.PrivateKey,
-		},
-	}, nil
+	return &keyPair, nil
 }
 
-func (b *backend) signTx(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	from := data.Get("name").(string)
+func (b *backend) sign(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	id := data.Get("id").(string)
+	digestHex := data.Get("digest").(string)
 
-	var txDataToSign []byte
-	dataInput := data.Get("data").(string)
-	// some client such as go-ethereum uses "input" instead of "data"
-	if dataInput == "" {
-		dataInput = data.Get("input").(string)
+	if len(digestHex) != 66 || digestHex[:2] != "0x" {
+		return logical.ErrorResponse("digest must be 0x-prefixed 32-byte hex"), nil
 	}
-	if len(dataInput) > 2 && dataInput[0:2] != "0x" {
-		dataInput = "0x" + dataInput
+	digest, err := hexutil.Decode(digestHex)
+	if err != nil || len(digest) != 32 {
+		return logical.ErrorResponse("invalid digest"), nil
 	}
 
-	txDataToSign, err := hexutil.Decode(dataInput)
+	// fetch key material
+	keyEntry, err := req.Storage.Get(ctx, fmt.Sprintf("secp256k1/keys/%s", id))
+	if err != nil || keyEntry == nil {
+		return logical.ErrorResponse("key not found"), nil
+	}
+	var kp KeyPair
+	if err := keyEntry.DecodeJSON(&kp); err != nil {
+		return nil, fmt.Errorf("failed to decode key")
+	}
+
+	priv, err := crypto.HexToECDSA(kp.PrivateKey)
 	if err != nil {
-		b.Logger().Error("Failed to decode payload for the 'data' field", "error", err)
-		return nil, err
+		return nil, fmt.Errorf("bad private key")
 	}
+	defer ZeroKey(priv)
 
-	account, err := getKey(from, req.Storage, ctx, b.Logger())
+	// Sign (deterministic k, low-S enforced by go-ethereum)
+	sig, err := crypto.Sign(digest, priv) // 65 bytes: R(32)||S(32)||V(1) where V is 0/1 recovery id
 	if err != nil {
-		b.Logger().Error("failed to retrieve the signing account", "address", from, "error", err)
-		return nil, fmt.Errorf("error retrieving signing account %s", from)
-	}
-	if account.Data == nil {
-		return nil, fmt.Errorf("signing account %s does not exist", from)
-	}
-	amount := ValidNumber(data.Get("value").(string))
-	if amount == nil {
-		b.Logger().Error("invalid amount for the 'value' field", "value", data.Get("value").(string))
-		return nil, fmt.Errorf("invalid amount for the 'value' field")
+		return nil, fmt.Errorf("sign failed: %w", err)
 	}
 
-	rawAddressTo := data.Get("to").(string)
+	r := new(big.Int).SetBytes(sig[0:32])
+	s := new(big.Int).SetBytes(sig[32:64])
+	recID := uint8(sig[64]) // 0 or 1
 
-	chainId := ValidNumber(data.Get("chainId").(string))
-	if chainId == nil {
-		b.Logger().Error("invalid chainId", "chainId", data.Get("chainId").(string))
-		return nil, fmt.Errorf("invalid 'chainId' value")
+	// Optional selector for output shape
+	outMode := "compact"
+	if v, ok := data.GetOk("return"); ok {
+		outMode = strings.ToLower(v.(string))
 	}
 
-	gasLimitIn := ValidNumber(data.Get("gas").(string))
-	if gasLimitIn == nil {
-		b.Logger().Error("invalid gas limit", "gas", data.Get("gas").(string))
-		return nil, fmt.Errorf("invalid gas limit")
+	switch outMode {
+	case "components":
+		return &logical.Response{
+			Data: map[string]interface{}{
+				"r":          "0x" + r.Text(16),
+				"s":          "0x" + s.Text(16),
+				"recoveryId": recID, // 0 or 1
+			},
+		}, nil
+	default: // "compact"
+		return &logical.Response{
+			Data: map[string]interface{}{
+				"signature":  "0x" + hex.EncodeToString(sig), // r||s||recId
+				"recoveryId": recID,
+			},
+		}, nil
 	}
-	gasLimit := gasLimitIn.Uint64()
-
-	gasPrice := ValidNumber(data.Get("gasPrice").(string))
-
-	privateKey, err := crypto.HexToECDSA(account.Data["privateKey"].(string))
-	if err != nil {
-		b.Logger().Error("error reconstructing private key from retrieved hex", "error", err)
-		return nil, fmt.Errorf("error reconstructing private key from retrieved hex")
-	}
-	defer ZeroKey(privateKey)
-
-	nonceIn := ValidNumber(data.Get("nonce").(string))
-	nonce := nonceIn.Uint64()
-
-	var tx *types.Transaction
-	if rawAddressTo == "" {
-		tx = types.NewContractCreation(nonce, amount, gasLimit, gasPrice, txDataToSign)
-	} else {
-		toAddress := common.HexToAddress(rawAddressTo)
-		tx = types.NewTransaction(nonce, toAddress, amount, gasLimit, gasPrice, txDataToSign)
-	}
-	var signer types.Signer
-	if big.NewInt(0).Cmp(chainId) == 0 {
-		signer = types.HomesteadSigner{}
-	} else {
-		signer = types.NewEIP155Signer(chainId)
-	}
-	signedTx, err := types.SignTx(tx, signer, privateKey)
-	if err != nil {
-		b.Logger().Error("Failed to sign the transaction object", "error", err)
-		return nil, err
-	}
-
-	var signedTxBuff bytes.Buffer
-	signedTx.EncodeRLP(&signedTxBuff)
-
-	return &logical.Response{
-		Data: map[string]interface{}{
-			"transaction_hash":   signedTx.Hash().Hex(),
-			"signed_transaction": hexutil.Encode(signedTxBuff.Bytes()),
-		},
-	}, nil
 }
 
 func ValidNumber(input string) *big.Int {
