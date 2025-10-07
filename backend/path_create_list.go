@@ -7,11 +7,12 @@ import (
 
 func pathCreateKey(b *backend) *framework.Path {
 	return &framework.Path{
-		Pattern: "keys/?$",
+		Pattern: "keys/create$",
 		Callbacks: map[logical.Operation]framework.OperationFunc{
 			logical.CreateOperation: b.createSecp256k1,
 			logical.UpdateOperation: b.createSecp256k1,
 		},
+		ExistenceCheck: b.pathExistenceCheck,
 		HelpSynopsis:    "create a secp256k1 key",
 		HelpDescription: "Post to this endpoint to create a secp256k1 key. The path end is the hash where the key is stored",
 		Fields: map[string]*framework.FieldSchema{
@@ -26,29 +27,19 @@ func pathCreateKey(b *backend) *framework.Path {
 
 func pathGetKey(b *backend) *framework.Path {
 	return &framework.Path{
-		Pattern: "keys/" + framework.GenericNameRegex("id"),
+		Pattern: "keys(/" + framework.GenericNameRegex("id") + ")?/?$",
 		Callbacks: map[logical.Operation]framework.OperationFunc{
 			logical.ReadOperation: b.ListKeys,
+			logical.ListOperation: b.ListKeys,
 		},
-			HelpSynopsis:    "List keys by prefix",
-		HelpDescription: "Lists keys under a given prefix below keys/.",
+		HelpSynopsis:    "List or retrieve keys",
+		HelpDescription: "Lists all keys or retrieves a specific key by ID.",
 		Fields: map[string]*framework.FieldSchema{
 			"id": {
 				Type:        framework.TypeString,
-				Description: "The ID of the key to retrieve. If not provided, all keys will be listed.",
-				Required:    true,
+				Description: "The ID of the key to retrieve. If omitted, all keys will be listed.",
+				Required:    false,
 			},
 		},
-	}
-}
-
-func pathListKeys(b *backend) *framework.Path {
-	return &framework.Path{
-		Pattern: "keys/?$",
-		Callbacks: map[logical.Operation]framework.OperationFunc{
-			logical.ReadOperation: b.ListKeys,
-		},
-		HelpSynopsis:    "List all keys",
-		HelpDescription: "Lists all keys stored under the keys/ prefix.",
 	}
 }

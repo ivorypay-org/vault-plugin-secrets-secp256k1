@@ -52,7 +52,6 @@ type KeyPair struct {
 func paths(b *backend) []*framework.Path {
 	return []*framework.Path{
 		pathCreateKey(b),
-		pathListKeys(b),
 		pathGetKey(b),
 		pathSignDigest(b),
 	}
@@ -127,7 +126,7 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 		PublicKey:  publicKeyString,
 	}
 
-	accountPath := fmt.Sprintf("secp256k1/keys/%s", id)
+	accountPath := fmt.Sprintf("keys/%s", id)
 
 	entry, _ := logical.StorageEntryJSON(accountPath, keypair)
 	err = req.Storage.Put(ctx, entry)
@@ -184,10 +183,10 @@ func (b *backend) ListKeys(ctx context.Context, req *logical.Request, data *fram
 	if id != "" {
 		key, err := getKey(id, req.Storage, ctx, b.Logger())
 
-		if err != nil {
+		if err != nil || key == nil {
 			return nil, fmt.Errorf("%v", err)
 		}
-		return &logical.Response{Data: map[string]interface{}{
+		return &logical.Response{Data: map[string]any{
 			"pubKey": key.PublicKey,
 		}}, nil
 	}
@@ -205,15 +204,11 @@ func getKey(id string, storage logical.Storage, ctx context.Context, logger log.
 	if id == "" {
 		return nil, fmt.Errorf("a unique identifier for the keypair is required")
 	}
-	path := fmt.Sprintf("secp256k1/keys/%s", id)
+	path := fmt.Sprintf("keys/%s", id)
 	entry, err := storage.Get(ctx, path)
-	if err != nil {
+	if err != nil || entry == nil {
 		logger.Error("Failed to retrieve the key by id", "path", path, "error", err)
 		return nil, err
-	}
-	if entry.Value == nil {
-		// could not find the corresponding key for the id
-		return nil, nil
 	}
 	var keyPair KeyPair
 	if err := entry.DecodeJSON(&keyPair); err != nil {
@@ -236,7 +231,7 @@ func (b *backend) sign(ctx context.Context, req *logical.Request, data *framewor
 	}
 
 	// fetch key material
-	keyEntry, err := req.Storage.Get(ctx, fmt.Sprintf("secp256k1/keys/%s", id))
+	keyEntry, err := req.Storage.Get(ctx, fmt.Sprintf("keys/%s", id))
 	if err != nil || keyEntry == nil {
 		return logical.ErrorResponse("key not found"), nil
 	}
