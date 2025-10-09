@@ -19,12 +19,8 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
-	"math/big"
-	"regexp"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
 	log "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/sdk/framework"
@@ -92,19 +88,19 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 	var privateKey *ecdsa.PrivateKey
 
 	if id == "" {
-		return nil, fmt.Errorf("a unique identifier for the keypair is required as a parameter called id")
+		return logical.ErrorResponse("a unique identifier for the keypair is required as a parameter called id"), nil
 	}
 
 	// check if the key already exists
 	key, err := getKey(id, req.Storage, ctx, b.Logger())
 	if err != nil {
 		b.Logger().Error("Failed to retrieve the key by id", "id", id, "error", err)
-		return nil, err
+		return logical.ErrorResponse(fmt.Errorf("%v", err).Error()), nil
 	}
 	if key != nil {
 		b.Logger().Info("Key already exists", "id", id)
 		return &logical.Response{
-			Data: map[string]interface{}{
+			Data: map[string]any{
 				"pubKey": key.PublicKey,
 			},
 		}, nil
@@ -132,7 +128,7 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 	err = req.Storage.Put(ctx, entry)
 	if err != nil {
 		b.Logger().Error("failed to save the new keypair to storage", "error", err)
-		return nil, err
+		return logical.ErrorResponse(fmt.Errorf("%v", err).Error()), nil
 	}
 
 	return &logical.Response{
@@ -184,7 +180,7 @@ func (b *backend) ListKeys(ctx context.Context, req *logical.Request, data *fram
 		key, err := getKey(id, req.Storage, ctx, b.Logger())
 
 		if err != nil || key == nil {
-			return nil, fmt.Errorf("%v", err)
+			return logical.ErrorResponse(fmt.Errorf("%v", err).Error()), nil
 		}
 		return &logical.Response{Data: map[string]any{
 			"pubKey": key.PublicKey,
@@ -194,7 +190,7 @@ func (b *backend) ListKeys(ctx context.Context, req *logical.Request, data *fram
 	keys, err := req.Storage.List(ctx, "keys/")
 	if err != nil {
 		b.Logger().Error("Failed to retrieve the list of accounts", "error", err)
-		return nil, err
+		return logical.ErrorResponse(fmt.Errorf("%v", err).Error()), nil
 	}
 
 	return logical.ListResponse(keys), nil
@@ -220,7 +216,7 @@ func getKey(id string, storage logical.Storage, ctx context.Context, logger log.
 
 func (b *backend) sign(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	id := data.Get("id").(string)
-	digestHex := data.Get("digest").(string)
+	digestHex := data.Get("data").(string)
 
 	if len(digestHex) != 66 || digestHex[:2] != "0x" {
 		return logical.ErrorResponse("digest must be 0x-prefixed 32-byte hex"), nil
@@ -230,67 +226,35 @@ func (b *backend) sign(ctx context.Context, req *logical.Request, data *framewor
 		return logical.ErrorResponse("invalid digest"), nil
 	}
 
-	// fetch key material
-	keyEntry, err := req.Storage.Get(ctx, fmt.Sprintf("keys/%s", id))
-	if err != nil || keyEntry == nil {
+	key, err := getKey(id, req.Storage, ctx, b.Logger())
+	if err != nil || key == nil {
 		return logical.ErrorResponse("key not found"), nil
 	}
-	var kp KeyPair
-	if err := keyEntry.DecodeJSON(&kp); err != nil {
-		return nil, fmt.Errorf("failed to decode key")
-	}
 
-	priv, err := crypto.HexToECDSA(kp.PrivateKey)
+	priv, err := crypto.HexToECDSA(key.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("bad private key")
 	}
 	defer ZeroKey(priv)
 
-	// Sign (deterministic k, low-S enforced by go-ethereum)
-	sig, err := crypto.Sign(digest, priv) // 65 bytes: R(32)||S(32)||V(1) where V is 0/1 recovery id
+	// Use Ethereum-compatible signing which returns [R || S || V]
+	signatureBytes, err := crypto.Sign(digest, priv)
 	if err != nil {
 		return nil, fmt.Errorf("sign failed: %w", err)
 	}
 
-	r := new(big.Int).SetBytes(sig[0:32])
-	s := new(big.Int).SetBytes(sig[32:64])
-	recID := uint8(sig[64]) // 0 or 1
+	rBytes := signatureBytes[0:32]
+	sBytes := signatureBytes[32:64]
+	vBytes := signatureBytes[64]
 
-	// Optional selector for output shape
-	outMode := "compact"
-	if v, ok := data.GetOk("return"); ok {
-		outMode = strings.ToLower(v.(string))
-	}
-
-	switch outMode {
-	case "components":
-		return &logical.Response{
-			Data: map[string]interface{}{
-				"r":          "0x" + r.Text(16),
-				"s":          "0x" + s.Text(16),
-				"recoveryId": recID, // 0 or 1
-			},
-		}, nil
-	default: // "compact"
-		return &logical.Response{
-			Data: map[string]interface{}{
-				"signature":  "0x" + hex.EncodeToString(sig), // r||s||recId
-				"recoveryId": recID,
-			},
-		}, nil
-	}
-}
-
-func ValidNumber(input string) *big.Int {
-	if input == "" {
-		return big.NewInt(0)
-	}
-	matched, err := regexp.MatchString("([0-9])", input)
-	if !matched || err != nil {
-		return nil
-	}
-	amount := math.MustParseBig256(input)
-	return amount.Abs(amount)
+	return &logical.Response{
+		Data: map[string]interface{}{
+			"r":         "0x" + hex.EncodeToString(rBytes),
+			"s":         "0x" + hex.EncodeToString(sBytes),
+			"v":         vBytes,
+			"signature": "0x" + hex.EncodeToString(signatureBytes),
+		},
+	}, nil
 }
 
 func ZeroKey(k *ecdsa.PrivateKey) {

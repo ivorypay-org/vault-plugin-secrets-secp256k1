@@ -16,10 +16,15 @@ package backend
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/sha256"
 	"errors"
+	"math/big"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	log "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/sdk/helper/logging"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -91,24 +96,17 @@ func TestAccounts(t *testing.T) {
 		"id": "key1",
 	}
 
-	res, err := b.HandleRequest(context.Background(), req)
+	res, _ := b.HandleRequest(context.Background(), req)
 	storage := req.Storage
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
 
 	address1, ok := res.Data["pubKey"].(string)
 	assert.True(ok)
 	assert.NotEmpty(address1)
 
-
 	// read account by address
 	req = logical.TestRequest(t, logical.ReadOperation, "keys/key1")
 	req.Storage = storage
-	res, err = b.HandleRequest(context.Background(), req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	res, _ = b.HandleRequest(context.Background(), req)
 	pubKey, ok := res.Data["pubKey"].(string)
 	assert.True(ok)
 	assert.Equal(address1, pubKey)
@@ -116,10 +114,7 @@ func TestAccounts(t *testing.T) {
 	// read all keys
 	req = logical.TestRequest(t, logical.ReadOperation, "keys/")
 	req.Storage = storage
-	res, err = b.HandleRequest(context.Background(), req)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
+	res, _ = b.HandleRequest(context.Background(), req)
 	keys, ok := res.Data["keys"].([]string)
 	assert.True(ok)
 	assert.Len(keys, 1)
@@ -128,7 +123,75 @@ func TestAccounts(t *testing.T) {
 	// read non-existent key
 	req = logical.TestRequest(t, logical.ReadOperation, "keys/key2")
 	req.Storage = storage
-	res, err = b.HandleRequest(context.Background(), req)
-	assert.Nil(res)
-	assert.NotNil(err)
+	res, _ = b.HandleRequest(context.Background(), req)
+	assert.NotNil(res.Error())
+}
+
+func TestSign(t *testing.T) {
+	assert := assert.New(t)
+	b, _ := getBackend(t)
+
+	createReq := logical.TestRequest(t, logical.UpdateOperation, "keys/create")
+	createReq.Data = map[string]any{"id": "sigKey"}
+
+	createRes, err := b.HandleRequest(context.Background(), createReq)
+	assert.NoError(err)
+	assert.Nil(createRes.Error())
+
+	storage := createReq.Storage
+
+	entry, err := storage.Get(context.Background(), "keys/sigKey")
+	assert.NoError(err)
+	assert.NotNil(entry)
+	var keyPair KeyPair
+	assert.NoError(entry.DecodeJSON(&keyPair))
+
+	digest := sha256.Sum256([]byte("sign-digest"))
+	digestHex := hexutil.Encode(digest[:])
+
+	privateKey, err := crypto.HexToECDSA(keyPair.PrivateKey)
+	assert.NoError(err)
+	defer ZeroKey(privateKey)
+
+	expectedSig, err := crypto.Sign(digest[:], privateKey)
+	assert.NoError(err)
+
+	signReq := logical.TestRequest(t, logical.UpdateOperation, "keys/sigKey/sign")
+	signReq.Storage = storage
+	signReq.Data = map[string]any{
+		"id":   "sigKey",
+		"data": digestHex,
+	}
+
+	signRes, err := b.HandleRequest(context.Background(), signReq)
+	assert.NoError(err)
+	assert.Nil(signRes.Error())
+	assert.NotNil(signRes.Data)
+
+	// verify the signature
+	
+	sigStr, ok := signRes.Data["signature"].(string)
+	assert.True(ok)
+	assert.Equal(hexutil.Encode(expectedSig), sigStr)
+	
+	rStr, ok := signRes.Data["r"].(string)
+	assert.True(ok)
+	rByte, err := hexutil.Decode(rStr)
+	assert.NoError(err)
+	r := rByte
+	assert.Equal(expectedSig[0:32], r)
+	
+	sStr, ok := signRes.Data["s"].(string)
+	assert.True(ok)
+	sByte, err := hexutil.Decode(sStr)
+	assert.NoError(err)
+	s := sByte
+	assert.Equal(expectedSig[32:64], s)
+
+	vVal, ok := signRes.Data["v"].(uint8)
+	assert.True(ok)
+	assert.Equal(expectedSig[64], vVal)
+
+	verified := ecdsa.Verify(&privateKey.PublicKey, digest[:], big.NewInt(0).SetBytes(r[:]), big.NewInt(0).SetBytes(s[:]))
+	assert.True(verified)
 }

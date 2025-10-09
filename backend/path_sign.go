@@ -7,31 +7,24 @@ import (
 
 func pathSignDigest(b *backend) *framework.Path {
 	return &framework.Path{
-		Pattern: "keys/" + framework.GenericNameRegex("id") + "/sign-digest",
+		Pattern: "keys/" + framework.GenericNameRegex("id") + "/sign$",
 		Fields: map[string]*framework.FieldSchema{
 			"id": {
 				Type:        framework.TypeString,
-				Description: "Key ID",
+				Description: "Key Id",
 				Required:    true,
 			},
-			"digest": {
+			"data": {
 				Type:        framework.TypeString,
-				Description: "32-byte Keccak-256 digest (0x...)",
+				Description: "32 byte hex-encoded digest to sign",
 				Required:    true,
-			},
-			// Optional knobs if you ever want them:
-			"return": {
-				Type:        framework.TypeString,
-				Description: "one of: compact (default), components",
-				Default:     "compact",
 			},
 		},
 		Callbacks: map[logical.Operation]framework.OperationFunc{
-			// support both POST and PUT so `vault write` works
 			logical.UpdateOperation: b.sign,
 		},
 		ExistenceCheck: b.pathExistenceCheck,
 		HelpSynopsis:    "Sign a 32-byte digest with a secp256k1 key",
-		HelpDescription: "Returns r, s, and recovery id (yParity). Caller assembles the final transaction.",
+		HelpDescription: "Returns r, s, and recovery id (yParity)",
 	}
 }
