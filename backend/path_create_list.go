@@ -21,6 +21,11 @@ func pathCreateKey(b *backend) *framework.Path {
 				Description: "The ID of the key to create. This field is required.",
 				Required:    true,
 			},
+			"private_key": {
+				Type:        framework.TypeString,
+				Description: "Optional hex-encoded private key. If not provided, a new key will be generated.",
+				Required:    false,
+			},
 		},
 	}
 }

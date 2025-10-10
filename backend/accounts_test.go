@@ -195,3 +195,82 @@ func TestSign(t *testing.T) {
 	verified := ecdsa.Verify(&privateKey.PublicKey, digest[:], big.NewInt(0).SetBytes(r[:]), big.NewInt(0).SetBytes(s[:]))
 	assert.True(verified)
 }
+
+func TestQuickSign(t *testing.T) {
+	assert := assert.New(t)
+	b, _ := getBackend(t)
+	pKey := "0xbe62c2b5f217481a9284c176bd45f2f4748aab5f3b175508e30da7e4add01545"
+	// pKey := "0xca4bac7124d273795316beb26b353f9c250c4fb0e5332b567ee7066cd2424c0a"
+	createReq := logical.TestRequest(t, logical.UpdateOperation, "keys/create")
+	createReq.Data = map[string]any{"id": "sigKey", "private_key": pKey}
+
+	createRes, err := b.HandleRequest(context.Background(), createReq)
+	assert.NoError(err)
+	assert.Nil(createRes.Error())
+
+	storage := createReq.Storage
+
+	entry, err := storage.Get(context.Background(), "keys/sigKey")
+	assert.NoError(err)
+	assert.NotNil(entry)
+	var keyPair KeyPair
+	assert.NoError(entry.DecodeJSON(&keyPair))
+
+	// digestHex := "0x5c886f19abcb518478486fab3d8891c716bf5647d1a3e77214cfa092571cf9bc"
+	digestHex := "0xd8c4310df2044bfad0bfa4c9674f871b96c7a81a917287e8f88df413c590dadf"
+	digest, err := hexutil.Decode(digestHex)
+	assert.NoError(err)
+
+	privateKey, err := crypto.HexToECDSA(keyPair.PrivateKey)
+	assert.NoError(err)
+	defer ZeroKey(privateKey)
+
+	expectedSig, err := crypto.Sign(digest[:], privateKey)
+	assert.NoError(err)
+
+	signReq := logical.TestRequest(t, logical.UpdateOperation, "keys/sigKey/sign")
+	signReq.Storage = storage
+	signReq.Data = map[string]any{
+		"id":   "sigKey",
+		"data": digestHex,
+	}
+
+	signRes, err := b.HandleRequest(context.Background(), signReq)
+	assert.NoError(err)
+	assert.Nil(signRes.Error())
+	assert.NotNil(signRes.Data)
+
+	// verify the signature
+	
+	sigStr, ok := signRes.Data["signature"].(string)
+	assert.True(ok)
+	assert.Equal(hexutil.Encode(expectedSig), sigStr)
+	
+	rStr, ok := signRes.Data["r"].(string)
+	assert.True(ok)
+	rByte, err := hexutil.Decode(rStr)
+	assert.NoError(err)
+	r := rByte
+	assert.Equal(expectedSig[0:32], r)
+	
+	sStr, ok := signRes.Data["s"].(string)
+	assert.True(ok)
+	sByte, err := hexutil.Decode(sStr)
+	assert.NoError(err)
+	s := sByte
+	assert.Equal(expectedSig[32:64], s)
+
+	vVal, ok := signRes.Data["v"].(uint8)
+	assert.True(ok)
+	assert.Equal(expectedSig[64], vVal)
+
+	verified := ecdsa.Verify(&privateKey.PublicKey, digest[:], big.NewInt(0).SetBytes(r[:]), big.NewInt(0).SetBytes(s[:]))
+	signerPubKey, err := crypto.Ecrecover(digest[:], expectedSig)
+	assert.NoError(err)
+	assert.Equal(crypto.FromECDSAPub(&privateKey.PublicKey), signerPubKey)
+	assert.True(verified)
+
+	t.Logf("public key: %s, parity %d", crypto.PubkeyToAddress(privateKey.PublicKey).Hex(), vVal)
+	t.Logf("Signature: %s", sigStr)
+	assert.True(false)
+}

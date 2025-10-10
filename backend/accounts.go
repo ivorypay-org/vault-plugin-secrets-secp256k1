@@ -105,8 +105,16 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 			},
 		}, nil
 	}
-
-	privateKey, _ = crypto.GenerateKey()
+	privateKeyHex := data.Get("private_key").(string)
+	if privateKeyHex != "" {
+		privateKey, err = crypto.HexToECDSA(privateKeyHex[2:])
+		if err != nil {
+			b.Logger().Error("Failed to parse the provided private key", "error", err)
+			return logical.ErrorResponse("failed to parse the provided private key"), nil
+		}
+	} else {
+		privateKey, _ = crypto.GenerateKey()
+	}
 	privateKeyBytes := crypto.FromECDSA(privateKey)
 	privateKeyString := hexutil.Encode(privateKeyBytes)[2:]
 
@@ -132,7 +140,7 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 	}
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"pubKey": publicKeyString,
 		},
 	}, nil
@@ -248,7 +256,7 @@ func (b *backend) sign(ctx context.Context, req *logical.Request, data *framewor
 	vBytes := signatureBytes[64]
 
 	return &logical.Response{
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"r":         "0x" + hex.EncodeToString(rBytes),
 			"s":         "0x" + hex.EncodeToString(sBytes),
 			"v":         vBytes,
