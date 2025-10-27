@@ -93,10 +93,11 @@ func TestAccounts(t *testing.T) {
 	// create key1
 	req := logical.TestRequest(t, logical.UpdateOperation, "keys/create")
 	req.Data = map[string]any{
-		"id": "key1",
+		"id": "product1/key1",
 	}
 
-	res, _ := b.HandleRequest(context.Background(), req)
+	res, err := b.HandleRequest(context.Background(), req)
+	assert.NoError(err)
 	storage := req.Storage
 
 	address1, ok := res.Data["pubKey"].(string)
@@ -104,15 +105,16 @@ func TestAccounts(t *testing.T) {
 	assert.NotEmpty(address1)
 
 	// read account by address
-	req = logical.TestRequest(t, logical.ReadOperation, "keys/key1")
+	req = logical.TestRequest(t, logical.ReadOperation, "keys/product1/key1")
 	req.Storage = storage
-	res, _ = b.HandleRequest(context.Background(), req)
+	res, err = b.HandleRequest(context.Background(), req)
+	assert.NoError(err)
 	pubKey, ok := res.Data["pubKey"].(string)
 	assert.True(ok)
 	assert.Equal(address1, pubKey)
 
 	// read all keys
-	req = logical.TestRequest(t, logical.ReadOperation, "keys/")
+	req = logical.TestRequest(t, logical.ReadOperation, "keys/product1/")
 	req.Storage = storage
 	res, _ = b.HandleRequest(context.Background(), req)
 	keys, ok := res.Data["keys"].([]string)
@@ -121,7 +123,7 @@ func TestAccounts(t *testing.T) {
 	assert.Equal("key1", keys[0])
 
 	// read non-existent key
-	req = logical.TestRequest(t, logical.ReadOperation, "keys/key2")
+	req = logical.TestRequest(t, logical.ReadOperation, "keys/product1/key2")
 	req.Storage = storage
 	res, _ = b.HandleRequest(context.Background(), req)
 	assert.NotNil(res.Error())
@@ -217,7 +219,7 @@ func TestQuickSign(t *testing.T) {
 	assert.NoError(entry.DecodeJSON(&keyPair))
 
 	// digestHex := "0x5c886f19abcb518478486fab3d8891c716bf5647d1a3e77214cfa092571cf9bc"
-	digestHex := "0xd8c4310df2044bfad0bfa4c9674f871b96c7a81a917287e8f88df413c590dadf"
+	digestHex := "0xb4549ed52086bb8894c075bf486ff2c454172ee8ad11795f2a545d11e28068d0"
 	digest, err := hexutil.Decode(digestHex)
 	assert.NoError(err)
 

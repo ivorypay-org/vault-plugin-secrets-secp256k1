@@ -132,7 +132,11 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 
 	accountPath := fmt.Sprintf("keys/%s", id)
 
-	entry, _ := logical.StorageEntryJSON(accountPath, keypair)
+	entry, err := logical.StorageEntryJSON(accountPath, keypair)
+	if err != nil {
+		b.Logger().Error("failed to create storage entry for the new keypair", "error", err)
+		return logical.ErrorResponse(fmt.Errorf("%v", err).Error()), nil
+	}
 	err = req.Storage.Put(ctx, entry)
 	if err != nil {
 		b.Logger().Error("failed to save the new keypair to storage", "error", err)
@@ -184,8 +188,15 @@ func (b *backend) createSecp256k1(ctx context.Context, req *logical.Request, dat
 
 func (b *backend) ListKeys(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	id := data.Get("id").(string)
+	product := data.Get("product").(string)
+
+	if product == "" {
+		return logical.ErrorResponse("product is a required field"), nil
+	}
+
 	if id != "" {
-		key, err := getKey(id, req.Storage, ctx, b.Logger())
+		scopedId := fmt.Sprintf("%s/%s", product, id)
+		key, err := getKey(scopedId, req.Storage, ctx, b.Logger())
 
 		if err != nil || key == nil {
 			return logical.ErrorResponse(fmt.Errorf("%v", err).Error()), nil
@@ -195,7 +206,7 @@ func (b *backend) ListKeys(ctx context.Context, req *logical.Request, data *fram
 		}}, nil
 	}
 
-	keys, err := req.Storage.List(ctx, "keys/")
+	keys, err := req.Storage.List(ctx, fmt.Sprintf("keys/%s/", product))
 	if err != nil {
 		b.Logger().Error("Failed to retrieve the list of accounts", "error", err)
 		return logical.ErrorResponse(fmt.Errorf("%v", err).Error()), nil
